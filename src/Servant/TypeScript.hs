@@ -45,7 +45,6 @@ main = writeTypeScriptLibrary (Proxy :: Proxy UserAPI) "\/my\/destination\/folde
 
 module Servant.TypeScript (
   writeTypeScriptLibrary
-  , writeTypeScriptLibrary'
 
   -- * Options
   , ServantTypeScriptOptions
@@ -60,22 +59,23 @@ module Servant.TypeScript (
   ) where
 
 import Control.Lens
-import Control.Monad.Reader
+import Control.Monad.Reader (ReaderT (runReaderT), ask, asks)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad (when, forM_)
 import Data.Aeson.TypeScript.TH
 import qualified Data.List as L
 import qualified Data.Map as M
 import Data.Maybe
 import Data.Proxy
 import qualified Data.Set as S
-import Data.String.Interpolate
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Servant.Foreign
 import Servant.TypeScript.Types
-import Servant.TypeScript.Util
 import System.Directory
 import System.FilePath
 
+import Servant.TypeScript.GetFunctions (getFunctions)
 
 type MainConstraints api = (
   HasForeign LangTSDecls [TSDeclaration] api
@@ -84,39 +84,30 @@ type MainConstraints api = (
   , GenerateList T.Text (Foreign T.Text api)
   )
 
--- | Write the TypeScript client library for the given API to the given folder using default options.
-writeTypeScriptLibrary :: MainConstraints api => Proxy api -> FilePath -> IO ()
-writeTypeScriptLibrary = writeTypeScriptLibrary' defaultServantTypeScriptOptions
-
 -- | Write the TypeScript client library for the given API to the given folder.
-writeTypeScriptLibrary' :: forall api. MainConstraints api => ServantTypeScriptOptions -> Proxy api -> FilePath -> IO ()
-writeTypeScriptLibrary' opts _ rootDir = flip runReaderT opts $ do
+writeTypeScriptLibrary :: forall api. MainConstraints api => Proxy api -> FilePath -> IO ()
+writeTypeScriptLibrary _api rootDir = do
   writeClientTypes (Proxy @api) rootDir
   writeClientLibraries (Proxy @api) rootDir
 
 writeClientTypes :: forall api. (
   HasForeign LangTSDecls [TSDeclaration] api
   , GenerateList [TSDeclaration] (Foreign [TSDeclaration] api)
-  ) => Proxy api -> FilePath -> ReaderT ServantTypeScriptOptions IO ()
+  ) => Proxy api -> FilePath -> IO ()
 writeClientTypes _ folder = do
   -- Types from API
   let decls = S.toList $ S.fromList $ getAllTypesFromReqs (getReqsWithDecls (Proxy :: Proxy api))
 
-  -- Extra types not mentioned in the API (used in websocket protocols)
-  extra <- asks extraTypes
-  let decls' = mconcat [getTypeScriptDeclarations x | TSType x <- extra]
 
-  liftIO $ writeFile (folder </> "client.d.ts") (formatTSDeclarations (L.nub (decls <> decls')))
+  liftIO $ writeFile (folder </> "client.d.ts") (formatTSDeclarations (L.nub decls))
 
 writeClientLibraries :: forall api. (
   HasForeign LangTS T.Text api
   , GenerateList T.Text (Foreign T.Text api)
-  ) => Proxy api -> FilePath -> ReaderT ServantTypeScriptOptions IO ()
+  ) => Proxy api -> FilePath -> IO ()
 writeClientLibraries _ folder = do
-  -- Write the functions
   let allEndpoints = getEndpoints (Proxy :: Proxy api)
-  ServantTypeScriptOptions {..} <- ask
-  let groupedMap = groupBy getFileKey allEndpoints
+  let groupedMap = groupBy (const "client.ts") allEndpoints
   forM_ (M.toList groupedMap) $ \(fileKey, reqs) -> do
     let (dir, _) = splitFileName fileKey
     liftIO $ createDirectoryIfMissing True (folder </> dir)
@@ -125,7 +116,7 @@ writeClientLibraries _ folder = do
     let functionNames = fmap getFunctionName reqs
     when (L.length functionNames /= S.size (S.fromList functionNames)) $ do
       let duplicates = L.foldl' (flip (M.alter (\case Nothing -> Just (1 :: Integer); Just x -> Just (x + 1)))) mempty functionNames
-      error [i|Duplicate function names found when trying to generate '#{path'}': #{M.filter (>= 2) duplicates}|]
+      error "unreachabel: duplicate function name"
 
     liftIO $ T.writeFile path' (getFunctions getFunctionName reqs)
   where
@@ -153,3 +144,8 @@ getAllTypesFromReqs reqs = S.toList $ S.fromList vals
 
 getEndpoints :: (HasForeign LangTS T.Text api, GenerateList T.Text (Foreign T.Text api)) => Proxy api -> [Req T.Text]
 getEndpoints = listFromAPI (Proxy :: Proxy LangTS) (Proxy :: Proxy T.Text)
+
+getFunctionName = \req ->
+  case _ (req ^. (reqFuncName)) of
+    (method:xs) -> toCamelList $ fmap snakeToCamel (method:xs)
+    _ -> error "unreachable"

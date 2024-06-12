@@ -31,7 +31,6 @@ library
       Servant.TypeScript.GetFunctions
   other-modules:
       Servant.TypeScript.Types
-      Servant.TypeScript.Util
       Paths_servant_typescript
   hs-source-dirs:
       src
@@ -51,6 +50,7 @@ library
       aeson
     , aeson-typescript
     , base >=4.7 && <5
+    , bytestring
     , containers
     , directory
     , filepath
